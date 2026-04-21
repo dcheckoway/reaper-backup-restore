@@ -6,6 +6,20 @@ Progress messages go to **stderr** on every subcommand (phases and periodic coun
 
 ## Install
 
+**From a clone (recommended): use a virtual environment** so the editable install stays isolated:
+
+```bash
+cd reaper-backup-restore
+python3 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -e .
+reaper-backup --help
+```
+
+Run `deactivate` when you are done with that shell session. Recreate the venv if you change Python versions.
+
+**Without a venv** (global or existing environment):
+
 ```bash
 pip install -e .
 reaper-backup --help
