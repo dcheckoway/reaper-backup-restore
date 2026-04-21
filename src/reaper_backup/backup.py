@@ -38,6 +38,8 @@ class BackupConfig:
     output: Path
     resource_path: Path | None = None
     lean: LeanOptions = field(default_factory=LeanOptions)
+    # When True (CLI --comprehensive): full resource mirror + host cache + all lean opt-ins.
+    comprehensive: bool = False
     extra_roots: list[Path] = field(default_factory=list)
     project_roots: list[Path] = field(default_factory=list)
     include_system_plugins: bool = False
@@ -80,8 +82,64 @@ def _merge_project_roots(cfg: BackupConfig, ini: dict[str, str]) -> list[Path]:
     return out
 
 
+def _coverage_notes(cfg: BackupConfig) -> list[str]:
+    """Human-readable description of what this backup run captured (vs dump / export-audit)."""
+    lean = cfg.lean
+    lines: list[str] = []
+    if lean.full_resource_mirror:
+        lines.append(
+            "REAPER resource (Application Support/…/REAPER): full tree — presets/ (.ini VST/AU state), "
+            "Effects/ (JSFX + .rpl), FXChains/, Scripts/, Data/, UserPlugins/, KeyMaps/, ColorThemes/, OSC/, "
+            "MIDINoteNames/, etc. Excludes only OS junk (.DS_Store, ._* ) unless --include-os-metadata."
+        )
+    else:
+        lines.append(
+            "REAPER resource: lean — skips MetadataCaches/, QueuedRenders/, and plug-in scan-cache INIs "
+            "(reaper-*plugins*.ini, reaper-jsfx.ini, reaper-clap-*.ini, reaper-recentfx.ini); "
+            "use --full-resource-mirror or --comprehensive to match export-audit disk coverage."
+        )
+    if lean.include_host_cache:
+        lines.append(
+            "Host cache: ~/Library/Caches/com.cockos.reaper included (optional tier; matches dump host_cache)."
+        )
+    else:
+        lines.append(
+            "Host cache: not included (use --include-host-cache or --comprehensive)."
+        )
+    lines.append(
+        "Audio: user plug-ins under ~/Library/Audio/Plug-Ins; user AU/Vendor presets under ~/Library/Audio/Presets."
+    )
+    if cfg.include_system_plugins:
+        lines.append("System plug-ins: /Library/Audio/Plug-Ins included.")
+    if cfg.include_system_audio_presets:
+        lines.append("System Audio/Presets: /Library/Audio/Presets included.")
+    if cfg.official_export_zip:
+        lines.append(
+            "Cockos Export configuration zip stored as artifact (compare with config-inspect; not auto-merged on restore)."
+        )
+    lines.append(
+        "Projects: paths from reaper.ini + --project-root/--extra-root; absolute paths may need restore --map-user."
+    )
+    return lines
+
+
 def run_backup(cfg: BackupConfig) -> dict:
     log = make_log(cfg.verbose)
+    if cfg.comprehensive:
+        cfg.lean = LeanOptions(
+            include_plugin_scan_caches=True,
+            include_metadata_caches=True,
+            include_queued_renders=True,
+            include_host_cache=True,
+            include_peaks=cfg.lean.include_peaks,
+            exclude_project_backups=cfg.lean.exclude_project_backups,
+            full_resource_mirror=True,
+            include_os_metadata=cfg.lean.include_os_metadata,
+        )
+        log(
+            "backup: comprehensive profile — full REAPER resource tree, host cache, "
+            "metadata/queued/scan INIs (aligned with export-audit / preset-details coverage)"
+        )
     log(
         f"backup: starting (dry_run={cfg.dry_run}) → output {cfg.output.resolve()}"
     )
@@ -90,7 +148,7 @@ def run_backup(cfg: BackupConfig) -> dict:
     if cfg.resource_path:
         resource = cfg.resource_path.expanduser().resolve()
     else:
-        resource = (home_path / "Library" / "Application Support" / "REAPER").resolve()
+        resource = paths.resolve_resource_path(None, home_dir=home_path)
     data_root = (cfg.output / "data").resolve()
     manifest_entries: list[dict] = []
 
@@ -385,7 +443,9 @@ def run_backup(cfg: BackupConfig) -> dict:
         "hostname": platform.node(),
         "source_home": str(home_path),
         "resource_path": str(resource),
+        "backup_profile": "comprehensive" if cfg.comprehensive else "lean",
         "path_hints": extract_path_hints(ini),
+        "coverage_notes": _coverage_notes(cfg),
         "lean": {
             "include_plugin_scan_caches": cfg.lean.include_plugin_scan_caches,
             "include_metadata_caches": cfg.lean.include_metadata_caches,

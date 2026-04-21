@@ -12,6 +12,8 @@ from .config_zip import compare_zip_to_paths, list_zip_members
 from .dump_lib import resource_relative_set, run_dump
 from .export_audit import format_evidence_text, run_export_audit
 from .lean import LeanOptions
+from .audio_inspect import run_audio_inspect
+from .preset_inventory import run_preset_details
 from .restore import RestoreConfig, run_restore
 
 
@@ -26,6 +28,9 @@ def _dump_cmd(args: argparse.Namespace) -> int:
         rpp_details=args.rpp_details,
         rpp_limit=args.rpp_limit,
         verbose=not args.quiet,
+        preset_details=args.preset_details,
+        include_audio_presets_in_preset_details=not args.no_audio_presets_in_preset_details,
+        preset_details_max_files=args.preset_details_max_files,
     )
     if args.format == "json":
         print(json.dumps(payload, indent=2))
@@ -39,6 +44,111 @@ def _dump_cmd(args: argparse.Namespace) -> int:
         if args.rpp_details and "rpp_details" in payload:
             for row in payload["rpp_details"][:20]:
                 print(" ", row.get("path"), row.get("track_count"), row.get("reaper_version"))
+        if args.preset_details and "preset_details" in payload:
+            pd = payload["preset_details"]
+            rr = pd.get("reaper_resource_presets") or {}
+            er = pd.get("reaper_effects_rpl") or {}
+            ap = pd.get("audio_presets_user") or {}
+            print(
+                "preset_details: presets/",
+                rr.get("file_count"),
+                "files; Effects/*.rpl",
+                er.get("file_count"),
+                "files; Audio/Presets",
+                ap.get("file_count"),
+                "files (see JSON for per-file metadata)",
+            )
+    return 0
+
+
+def _audio_inspect_cmd(args: argparse.Namespace) -> int:
+    payload = run_audio_inspect(
+        include_system_plug_ins=args.include_system_plug_ins,
+        include_system_presets=args.include_system_presets,
+        include_audio_presets=not args.no_audio_presets,
+        max_preset_files=args.max_files,
+    )
+    if args.format == "json":
+        print(json.dumps(payload, indent=2))
+    else:
+        pu = payload.get("plug_ins_user") or {}
+        print("Plug-Ins (user):", pu.get("bundle_count"), "bundles at", pu.get("root"))
+        if pu.get("by_format"):
+            print("  by format:", pu.get("by_format"))
+        if payload.get("plug_ins_system"):
+            ps = payload["plug_ins_system"]
+            print("Plug-Ins (system):", ps.get("bundle_count"), "bundles at", ps.get("root"))
+            if ps.get("by_format"):
+                print("  by format:", ps.get("by_format"))
+        ap = payload.get("audio_presets_user") or {}
+        if ap.get("skipped"):
+            print("Audio/Presets:", ap.get("reason", "skipped"))
+        else:
+            print(
+                "Audio/Presets (user):",
+                ap.get("file_count"),
+                "files",
+                "(truncated)" if ap.get("truncated") else "",
+            )
+            if ap.get("by_extension"):
+                print("  by extension:", ap["by_extension"])
+        if payload.get("audio_presets_system"):
+            aps = payload["audio_presets_system"]
+            print(
+                "Audio/Presets (system):",
+                aps.get("file_count"),
+                "files",
+                "(truncated)" if aps.get("truncated") else "",
+            )
+        print(payload.get("reaper_resource_note", ""))
+    return 0
+
+
+def _preset_details_cmd(args: argparse.Namespace) -> int:
+    payload = run_preset_details(
+        resource_path=Path(args.resource).expanduser() if args.resource else None,
+        include_audio_presets_user=not args.no_audio_presets,
+        max_files_per_tree=args.max_files,
+    )
+    if args.format == "json":
+        print(json.dumps(payload, indent=2))
+    else:
+        rr = payload.get("reaper_resource_presets") or {}
+        er = payload.get("reaper_effects_rpl") or {}
+        ap = payload.get("audio_presets_user") or {}
+        print("resource_path:", payload.get("resource_path"))
+        st = payload.get("resource_path_status") or {}
+        if st:
+            print(
+                "resource_path_status:",
+                "dir" if st.get("resource_dir_exists") else "missing",
+                "| reaper.ini",
+                "yes" if st.get("reaper_ini_present") else "no",
+            )
+        for line in payload.get("empty_scan_hints") or ():
+            print("hint:", line)
+        print("REAPER presets/:", rr.get("file_count"), "files", "(truncated)" if rr.get("truncated") else "")
+        if rr.get("by_extension"):
+            print("  by extension:", rr["by_extension"])
+        if rr.get("by_first_path_component_under_presets"):
+            print("  by plugin folder (first level):", rr["by_first_path_component_under_presets"])
+        print(
+            "Effects/*.rpl:",
+            er.get("file_count"),
+            "files",
+            "(truncated)" if er.get("truncated") else "",
+        )
+        if er.get("by_author_folder"):
+            print("  by author folder:", er["by_author_folder"])
+        if er.get("note"):
+            print(" ", er["note"])
+        if ap.get("skipped"):
+            print("Audio/Presets: (skipped —", ap.get("reason", "disabled"), ")")
+        else:
+            print("Audio/Presets:", ap.get("file_count"), "files", "(truncated)" if ap.get("truncated") else "")
+            if ap.get("by_extension"):
+                print("  by extension:", ap["by_extension"])
+        print("(Use --format json for full per-file details: sections, size, mtime, …)")
     return 0
 
 
@@ -57,6 +167,7 @@ def _backup_cmd(args: argparse.Namespace) -> int:
         output=Path(args.output).expanduser(),
         resource_path=Path(args.resource).expanduser() if args.resource else None,
         lean=lean,
+        comprehensive=args.comprehensive,
         extra_roots=[Path(p) for p in (args.extra_root or [])],
         project_roots=[Path(p) for p in (args.project_root or [])],
         include_system_plugins=args.include_system_plugins,
@@ -74,7 +185,16 @@ def _backup_cmd(args: argparse.Namespace) -> int:
     )
     manifest = run_backup(cfg)
     if args.dry_run:
-        print(json.dumps({"dry_run": True, "entry_count": len(manifest.get("entries", []))}, indent=2))
+        print(
+            json.dumps(
+                {
+                    "dry_run": True,
+                    "backup_profile": manifest.get("backup_profile"),
+                    "entry_count": len(manifest.get("entries", [])),
+                },
+                indent=2,
+            )
+        )
     else:
         print("Wrote", cfg.output / "manifest.json")
     return 0
@@ -93,6 +213,7 @@ def _restore_cmd(args: argparse.Namespace) -> int:
         backup_root=root,
         dry_run=args.dry_run,
         map_user=map_user,
+        home_dir=Path(args.home).expanduser() if args.home else None,
         verbose=not args.quiet,
     )
     log = run_restore(cfg)
@@ -150,10 +271,21 @@ def _config_inspect_cmd(args: argparse.Namespace) -> int:
     total = sum(s for _, s in members)
     log(f"config-inspect: {len(members)} member(s), {total} bytes (uncompressed)")
     print(f"{z}: {len(members)} files, {total} bytes (uncompressed)")
-    if args.list:
-        log("config-inspect: listing members to stdout …")
-        for name, sz in members:
-            print(f"  {sz:10d}  {name}")
+    if not args.summary_only:
+        show = members if args.list else members[: args.preview]
+        if args.list:
+            log("config-inspect: listing all members to stdout …")
+        else:
+            log(
+                f"config-inspect: listing first {len(show)} of {len(members)} members …"
+            )
+        print()
+        print(f"{'size (bytes)':>12}  path")
+        for name, sz in show:
+            print(f"{sz:12d}  {name}")
+        if not args.list and len(members) > len(show):
+            more = len(members) - len(show)
+            print(f"... {more} more file(s); re-run with --list for the full listing")
     if args.compare_with:
         dump_path = Path(args.compare_with).expanduser()
         log(f"config-inspect: loading {dump_path} for compare …")
@@ -188,6 +320,23 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--rpp-details", action="store_true", help="Parse sample of .rpp files")
     d.add_argument("--rpp-limit", type=int, default=50)
     d.add_argument(
+        "--preset-details",
+        action="store_true",
+        help="Deep preset inventory: content sniff, INI sections, path-derived plugin hints",
+    )
+    d.add_argument(
+        "--no-audio-presets-in-preset-details",
+        action="store_true",
+        help="With --preset-details, skip ~/Library/Audio/Presets",
+    )
+    d.add_argument(
+        "--preset-details-max-files",
+        type=int,
+        default=10_000,
+        metavar="N",
+        help="Cap files analyzed per tree (default 10000)",
+    )
+    d.add_argument(
         "--format",
         choices=("json", "text"),
         default="json",
@@ -195,12 +344,68 @@ def main(argv: list[str] | None = None) -> int:
     )
     d.set_defaults(func=_dump_cmd)
 
+    pd = sub.add_parser(
+        "preset-details",
+        parents=[quiet_parent],
+        help="Preset-focused report: presets/, Effects/*.rpl, Audio/Presets (metadata, not just names)",
+    )
+    pd.add_argument("--resource", help="Override REAPER resource path")
+    pd.add_argument(
+        "--no-audio-presets",
+        action="store_true",
+        help="Skip ~/Library/Audio/Presets (still scans presets/ and Effects/*.rpl)",
+    )
+    pd.add_argument(
+        "--max-files",
+        type=int,
+        default=10_000,
+        metavar="N",
+        help="Max files per tree (default 10000)",
+    )
+    pd.add_argument("--format", choices=("json", "text"), default="json")
+    pd.set_defaults(func=_preset_details_cmd)
+
+    ai = sub.add_parser(
+        "audio-inspect",
+        parents=[quiet_parent],
+        help="~/Library/Audio/Plug-Ins + Audio/Presets: bundles and preset file details (no full dump)",
+    )
+    ai.add_argument(
+        "--include-system-plug-ins",
+        action="store_true",
+        help="Also scan /Library/Audio/Plug-Ins",
+    )
+    ai.add_argument(
+        "--include-system-presets",
+        action="store_true",
+        help="Also deep-scan /Library/Audio/Presets",
+    )
+    ai.add_argument(
+        "--no-audio-presets",
+        action="store_true",
+        help="Only list plug-in bundles; skip ~/Library/Audio/Presets file walk",
+    )
+    ai.add_argument(
+        "--max-files",
+        type=int,
+        default=10_000,
+        metavar="N",
+        help="Cap preset files analyzed per tree (default 10000)",
+    )
+    ai.add_argument("--format", choices=("json", "text"), default="json")
+    ai.set_defaults(func=_audio_inspect_cmd)
+
     b = sub.add_parser(
         "backup",
         parents=[quiet_parent],
         help="Create lean backup directory + manifest.json",
     )
     b.add_argument("--output", required=True, help="Output directory")
+    b.add_argument(
+        "--comprehensive",
+        action="store_true",
+        help="Full REAPER resource mirror + host cache + caches/queues/scan INIs (matches export-audit disk scope; still add --official-export zip separately)",
+    )
     b.add_argument("--resource", help="Override REAPER resource path")
     b.add_argument("--extra-root", action="append", help="Include this tree (vendor/media)")
     b.add_argument("--project-root", action="append", help="Extra project root to back up")
@@ -236,6 +441,11 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument(
         "--map-user",
         help="Remap home for absolute paths: OLD_HOME=NEW_HOME",
+    )
+    r.add_argument(
+        "--home",
+        default=None,
+        help="Destination home directory for restore (default: current user's ~)",
     )
     r.set_defaults(func=_restore_cmd)
 
@@ -273,7 +483,23 @@ def main(argv: list[str] | None = None) -> int:
         help="Inspect Cockos Export configuration zip",
     )
     c.add_argument("zip_path", help="Path to exported zip")
-    c.add_argument("--list", action="store_true", help="Print all member paths and sizes")
+    c.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="Only print the one-line summary (no member table)",
+    )
+    c.add_argument(
+        "--preview",
+        type=int,
+        default=40,
+        metavar="N",
+        help="When not using --list, show first N members (default 40)",
+    )
+    c.add_argument(
+        "--list",
+        action="store_true",
+        help="Print every member path and size (overrides --preview)",
+    )
     c.add_argument(
         "--compare-with",
         metavar="DUMP.json",

@@ -16,7 +16,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .dump_lib import collect_project_paths
-from .paths import default_resource_path
+from .paths import resolve_resource_path
 from .progress import find_rpp_files_with_progress, make_log
 from .reaper_ini import parse_reaper_ini
 
@@ -36,6 +36,36 @@ def _tree_metrics(root: Path) -> dict:
             except OSError:
                 pass
     return {"present": True, "file_count": n, "total_bytes": total}
+
+
+def _tree_metrics_with_extensions(root: Path) -> dict:
+    """Like _tree_metrics plus by_extension counts (e.g. .rpl vs .ini under presets/)."""
+    if not root.is_dir():
+        return {
+            "present": False,
+            "file_count": 0,
+            "total_bytes": 0,
+            "by_extension": {},
+        }
+    n, total = 0, 0
+    by_ext: dict[str, int] = {}
+    for dirpath, _dn, filenames in os.walk(root):
+        for fn in filenames:
+            p = Path(dirpath) / fn
+            try:
+                st = p.stat()
+                total += st.st_size
+                n += 1
+                ext = Path(fn).suffix.lower() or "(no extension)"
+                by_ext[ext] = by_ext.get(ext, 0) + 1
+            except OSError:
+                pass
+    return {
+        "present": True,
+        "file_count": n,
+        "total_bytes": total,
+        "by_extension": dict(sorted(by_ext.items(), key=lambda x: -x[1])),
+    }
 
 
 def _rel_under_resource(path: Path, resource_path: Path) -> str:
@@ -90,6 +120,9 @@ def format_evidence_text(payload: dict) -> str:
         # One-line summary for standard tree metrics
         if "file_count" in metrics and "total_bytes" in metrics and "reaper_ini_present" not in metrics:
             lines.append(f"  {_summarize_tree_metrics(metrics)}")
+            be = metrics.get("by_extension")
+            if isinstance(be, dict) and be:
+                lines.append(f"  by extension: {be}")
         elif "ProjectTemplates" in metrics:
             lines.append(
                 f"  ProjectTemplates: {_summarize_tree_metrics(metrics['ProjectTemplates'])}"
@@ -262,7 +295,7 @@ def run_export_audit(
     """
     log = make_log(verbose)
 
-    resource_path = resource_path or default_resource_path()
+    resource_path = resolve_resource_path(resource_path)
     extra_roots = extra_roots or []
     project_roots = project_roots or []
 
@@ -358,7 +391,10 @@ def run_export_audit(
     ):
         if key == "misc_data":
             log(f"export-audit: walking {subpath.name}/ (often the slowest folder) …")
-        m = _tree_metrics(subpath)
+        if key == "plugin_presets":
+            m = _tree_metrics_with_extensions(subpath)
+        else:
+            m = _tree_metrics(subpath)
         m["resource_relative"] = _rel_under_resource(subpath, resource_path)
         add_cat(key, label=lbl, metrics=m)
 

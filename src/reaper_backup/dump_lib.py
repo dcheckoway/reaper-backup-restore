@@ -9,6 +9,7 @@ from collections.abc import Callable
 
 from . import paths
 from .plugin_scan import scan_audio_plug_ins_dirs
+from .preset_inventory import run_preset_details
 from .progress import find_rpp_files_with_progress, make_log
 from .reaper_ini import extract_path_hints, parse_reaper_ini, unique_parent_dirs
 from .rpp import parse_rpp
@@ -149,9 +150,12 @@ def run_dump(
     rpp_details: bool = False,
     rpp_limit: int = 50,
     verbose: bool = True,
+    preset_details: bool = False,
+    include_audio_presets_in_preset_details: bool = True,
+    preset_details_max_files: int | None = 10_000,
 ) -> dict:
     log = make_log(verbose)
-    resource_path = resource_path or paths.default_resource_path()
+    resource_path = paths.resolve_resource_path(resource_path)
     extra_roots = extra_roots or []
     project_roots = project_roots or []
 
@@ -237,6 +241,16 @@ def run_dump(
             except OSError as e:
                 details.append({"path": str(p.resolve()), "error": str(e)})
         payload["rpp_details"] = details
+
+    if preset_details:
+        log(
+            "dump: analyzing preset files (REAPER presets/ + optional Audio/Presets) …"
+        )
+        payload["preset_details"] = run_preset_details(
+            resource_path=resource_path,
+            include_audio_presets_user=include_audio_presets_in_preset_details,
+            max_files_per_tree=preset_details_max_files,
+        )
 
     log("dump: done")
     return payload

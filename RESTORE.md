@@ -4,13 +4,13 @@ Follow this order so REAPER does not launch until files are consistent. It match
 
 ## Before you leave the old machine
 
-1. **Export configuration** in REAPER: **Preferences → General → Export configuration** — save the zip to a known path; include it in backup (`--official-export`) or keep it next to your archive.
+1. **Export configuration** in REAPER: **Preferences → General → Export configuration** — save the zip to a known path; include it in backup (`--official-export`) or keep it next to your archive. For a backup that matches **live disk** scope from **`export-audit`** / **`preset-details`**, use **`reaper-backup backup --comprehensive`** (full `Application Support/REAPER` tree + host cache + scan/metadata/queued data). Check **`manifest.json`** → **`coverage_notes`** and **`backup_profile`**.
 2. **License / DRM inventory** — note iLok, vendor logins, and seat limits; deactivate seats if the vendor requires it before migration.
 3. **Consolidate projects** if you rely on scattered media — use REAPER’s consolidate / save-with-media workflows so paths are predictable.
 
 ## Prerequisites on the new system
 
-1. **User / home layout** — Use the same macOS short name and paths as the old machine **or** plan to remap paths (`reaper-backup restore --map-user OLD=NEW`) and fix absolute paths in `reaper.ini` / projects as needed.
+1. **User / home layout** — Use the same macOS short name and paths as the old machine **or** plan to remap paths (`reaper-backup restore --map-user OLD=NEW`) and fix absolute paths in `reaper.ini` / projects as needed. Use **`restore --home DESTHOME`** when restoring into a specific account’s home (non-interactive / automation).
 2. **Install REAPER** — From Cockos or restore a backed-up `REAPER.app` to `/Applications/`. **Do not launch** yet; if an installer opens REAPER, quit without saving.
 3. **Vendor plug-in installers (if needed)** — PKGs that install helpers outside plain bundles should run **before** the first REAPER launch when possible.
 
