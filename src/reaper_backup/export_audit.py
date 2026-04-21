@@ -9,6 +9,7 @@ every discovered .rpp. REAPER's exact export bundle may differ slightly.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from collections.abc import Callable
@@ -35,6 +36,116 @@ def _tree_metrics(root: Path) -> dict:
             except OSError:
                 pass
     return {"present": True, "file_count": n, "total_bytes": total}
+
+
+def _rel_under_resource(path: Path, resource_path: Path) -> str:
+    """Posix path relative to REAPER resource root, for display."""
+    try:
+        return path.resolve().relative_to(resource_path.resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _human_bytes(n: int) -> str:
+    if n < 1024:
+        return f"{n} B"
+    v = float(n)
+    for u in ("KiB", "MiB", "GiB", "TiB"):
+        v /= 1024.0
+        if v < 1024:
+            return f"{v:.1f} {u}"
+    return f"{v / 1024.0:.1f} PiB"
+
+
+def _summarize_tree_metrics(d: dict) -> str:
+    if not d.get("present", True) and d.get("file_count", 0) == 0:
+        return "missing or empty"
+    fc = d.get("file_count", 0)
+    tb = d.get("total_bytes", 0)
+    return f"{fc} files, {tb} bytes ({_human_bytes(tb)})"
+
+
+def format_evidence_text(payload: dict) -> str:
+    """
+    Human-readable breakdown of each Cockos category (metrics behind recommendations).
+    Use with ``export-audit --format text``; full structure is always in JSON output.
+    """
+    lines: list[str] = [
+        "--- Evidence (metrics behind each checkbox hint) ---",
+        f"Resource: {payload.get('resource_path', '')}",
+        "",
+    ]
+    for key in sorted(payload.get("categories", {})):
+        row = payload["categories"][key]
+        label = row.get("cockos_label", key)
+        sug = row.get("suggest_include", False)
+        sug_s = "yes" if sug else "no"
+        lines.append(f"• {label}  [{key}]  suggest_include={sug_s}")
+        if row.get("notes"):
+            lines.append(f"  notes: {row['notes']}")
+        metrics = row.get("metrics") or {}
+        rr = metrics.get("resource_relative")
+        if rr is not None:
+            lines.append(f"  path under resource: {str(rr).rstrip('/')}/")
+        # One-line summary for standard tree metrics
+        if "file_count" in metrics and "total_bytes" in metrics and "reaper_ini_present" not in metrics:
+            lines.append(f"  {_summarize_tree_metrics(metrics)}")
+        elif "ProjectTemplates" in metrics:
+            lines.append(
+                f"  ProjectTemplates: {_summarize_tree_metrics(metrics['ProjectTemplates'])}"
+            )
+            lines.append(
+                f"  TrackTemplates:   {_summarize_tree_metrics(metrics['TrackTemplates'])}"
+            )
+            lines.append(
+                f"  combined: {metrics.get('combined_file_count', 0)} files"
+            )
+        elif "reaper_ini_present" in metrics:
+            lines.append(
+                f"  reaper.ini: {metrics.get('reaper_ini_present')}; "
+                f"root .ini count: {metrics.get('root_ini_count', 0)}"
+            )
+            sample = metrics.get("root_ini_names_sample") or []
+            if sample:
+                lines.append(f"  sample .ini names: {', '.join(sample[:12])}")
+        elif "Cursors" in metrics and "KeyMaps" in metrics:
+            lines.append(f"  Cursors/: {_summarize_tree_metrics(metrics['Cursors'])}")
+            lines.append(f"  KeyMaps/: {_summarize_tree_metrics(metrics['KeyMaps'])}")
+        elif "root_ini_matches" in metrics:
+            rim = metrics["root_ini_matches"]
+            if rim:
+                for g, names in rim.items():
+                    lines.append(f"  {g}: {', '.join(names[:8])}")
+            else:
+                lines.append("  (no matching menu/toolbar .ini files at resource root)")
+        elif "ReaperKeyMap_files" in metrics:
+            lines.append(
+                f"  *.ReaperKeyMap in KeyMaps/: {metrics.get('ReaperKeyMap_files', 0)}"
+            )
+            sm = metrics.get("sample") or []
+            if sm:
+                lines.append(f"  sample: {', '.join(sm)}")
+        elif "root_glob_hits" in metrics or "ChanMap_dir" in metrics:
+            if metrics.get("root_glob_hits"):
+                lines.append(f"  root globs: {metrics['root_glob_hits']}")
+            if "ChanMap_dir" in metrics:
+                lines.append(
+                    f"  ChanMap/: {_summarize_tree_metrics(metrics['ChanMap_dir'])}"
+                )
+        elif "reaper_www" in metrics:
+            lines.append(
+                f"  reaper_www/: {_summarize_tree_metrics(metrics['reaper_www'])}"
+            )
+            lines.append(f"  OSC/: {_summarize_tree_metrics(metrics['OSC'])}")
+        else:
+            slim = {k: v for k, v in metrics.items() if k != "resource_relative"}
+            lines.append("  " + json.dumps(slim, indent=2).replace("\n", "\n  "))
+        lines.append("")
+    lines.append(
+        "(Default command output is JSON with the same `categories` object; "
+        "pipe through `jq` for queries, e.g. jq '.categories.color_themes')"
+    )
+    return "\n".join(lines)
 
 
 def _root_ini_names(resource: Path, *, limit: int = 80) -> list[str]:
@@ -205,6 +316,7 @@ def run_export_audit(
         "configuration",
         label="Configuration",
         metrics={
+            "resource_relative": ".",
             "reaper_ini_present": ini_path.is_file(),
             "root_ini_count": len(
                 [x for x in (resource_path.iterdir() if resource_path.is_dir() else []) if x.is_file() and x.suffix.lower() == ".ini"]
@@ -223,6 +335,7 @@ def run_export_audit(
         "project_and_track_templates",
         label="Project and track templates",
         metrics={
+            "resource_relative": "ProjectTemplates/ + TrackTemplates/",
             "ProjectTemplates": pt,
             "TrackTemplates": tt,
             "combined_file_count": merge_files,
@@ -245,7 +358,9 @@ def run_export_audit(
     ):
         if key == "misc_data":
             log(f"export-audit: walking {subpath.name}/ (often the slowest folder) …")
-        add_cat(key, label=lbl, metrics=_tree_metrics(subpath))
+        m = _tree_metrics(subpath)
+        m["resource_relative"] = _rel_under_resource(subpath, resource_path)
+        add_cat(key, label=lbl, metrics=m)
 
     # Cursors + key maps (two dirs)
     cur = _tree_metrics(resource_path / "Cursors")
@@ -253,7 +368,11 @@ def run_export_audit(
     add_cat(
         "cursors_and_key_maps",
         label="Cursors and key maps",
-        metrics={"Cursors": cur, "KeyMaps": km},
+        metrics={
+            "resource_relative": "Cursors/ + KeyMaps/",
+            "Cursors": cur,
+            "KeyMaps": km,
+        },
         suggest=(cur["file_count"] + km["file_count"]) > 0,
     )
 
@@ -265,7 +384,10 @@ def run_export_audit(
     add_cat(
         "menus_and_toolbars",
         label="Menus and toolbars",
-        metrics={"root_ini_matches": menu_hits},
+        metrics={
+            "resource_relative": ".",
+            "root_ini_matches": menu_hits,
+        },
         suggest=bool(menu_hits),
         notes="Looks for reaper-menu*.ini, reaper-main_menu.ini, reaper-toolbar*.ini at resource root.",
     )
@@ -279,6 +401,7 @@ def run_export_audit(
         "actions_and_key_bindings",
         label="Actions and key bindings",
         metrics={
+            "resource_relative": "KeyMaps/*.ReaperKeyMap",
             "ReaperKeyMap_files": len(keymap_files),
             "sample": [p.name for p in keymap_files[:12]],
         },
@@ -288,6 +411,9 @@ def run_export_audit(
 
     # Menu sets / channel mappings — best-effort names
     ms = _tree_metrics(resource_path / "MenuSets")
+    ms["resource_relative"] = _rel_under_resource(
+        resource_path / "MenuSets", resource_path
+    )
     add_cat(
         "menu_sets",
         label="Menu sets",
@@ -300,7 +426,11 @@ def run_export_audit(
     add_cat(
         "channel_mappings",
         label="Channel mappings",
-        metrics={"root_glob_hits": ch, "ChanMap_dir": ch_dir},
+        metrics={
+            "resource_relative": ". + ChanMap/",
+            "root_glob_hits": ch,
+            "ChanMap_dir": ch_dir,
+        },
         suggest=bool(ch) or ch_dir["file_count"] > 0,
         notes="Heuristic: ChanMap/ or reaper_chan*.ini at root.",
     )
@@ -316,13 +446,20 @@ def run_export_audit(
     add_cat(
         "web_interface_pages",
         label="Web Interface Pages",
-        metrics={"reaper_www": www, "OSC": osc_m},
+        metrics={
+            "resource_relative": "reaper_www/ + OSC/",
+            "reaper_www": www,
+            "OSC": osc_m,
+        },
         suggest=www["file_count"] > 0,
         notes="Custom web pages may live under reaper_www/ if present; otherwise unclear from files alone.",
     )
 
     # Unsaved / cached — MetadataCaches (discourage for export parity; regenerable)
     meta = _tree_metrics(resource_path / "MetadataCaches")
+    meta["resource_relative"] = _rel_under_resource(
+        resource_path / "MetadataCaches", resource_path
+    )
     add_cat(
         "unsaved_cached_metadata",
         label="Unsaved/Cached Metadata",

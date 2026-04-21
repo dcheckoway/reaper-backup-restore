@@ -10,7 +10,7 @@ from pathlib import Path
 from .backup import BackupConfig, run_backup
 from .config_zip import compare_zip_to_paths, list_zip_members
 from .dump_lib import resource_relative_set, run_dump
-from .export_audit import run_export_audit
+from .export_audit import format_evidence_text, run_export_audit
 from .lean import LeanOptions
 from .restore import RestoreConfig, run_restore
 
@@ -135,6 +135,8 @@ def _export_audit_cmd(args: argparse.Namespace) -> int:
                 payload.get("rpp_files_discovered"),
                 ".rpp — use --all-rpp for full history)",
             )
+        print()
+        print(format_evidence_text(payload))
     return 0
 
 

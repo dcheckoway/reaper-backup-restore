@@ -19,7 +19,7 @@ reaper-backup --help
 | `backup` | Copy lean default set (excludes regenerable caches, scan INIs, peaks unless flags) into an output directory with `manifest.json`. |
 | `restore` | Apply a backup in **canonical order** (see `RESTORE.md`). Supports `--dry-run` and `--map-user OLD=NEW`. |
 | `config-inspect` | List a Cockos **Export configuration** zip; optional `--compare-with` a `dump` JSON to diff zip vs live resource files. |
-| `export-audit` | Inspect the **live** resource folder (no zip): heuristics per Cockos export categories, optional `.rpp` scan for JSFX (`<JS` lines). Use before exporting to see what to tick. |
+| `export-audit` | Inspect the **live** resource folder (no zip): heuristics per Cockos export categories, optional `.rpp` scan for JSFX (`<JS` lines). Use before exporting to see what to tick. **JSON** includes full `categories` metrics; **`--format text`** prints an **Evidence** section (paths, file counts, sizes) behind each recommendation. |
 
 ### Examples
 
@@ -48,6 +48,9 @@ reaper-backup export-audit --all-rpp --format text
 # Any subcommand: JSON on stdout only with --quiet (progress is on stderr)
 reaper-backup dump --format json --quiet > dump.json
 reaper-backup export-audit --format json --quiet > audit.json
+
+# Inspect one export-audit category from JSON (e.g. Color themes)
+reaper-backup export-audit --format json --quiet | jq '.categories.color_themes'
 
 # Compare Cockos zip to a prior dump
 reaper-backup config-inspect ~/Desktop/reaper-config.zip --compare-with dump.json

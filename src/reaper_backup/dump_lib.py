@@ -50,14 +50,26 @@ def collect_project_paths(
     ini: dict[str, str],
     extra_roots: list[Path],
 ) -> list[Path]:
+    """
+    Project roots from reaper.ini path hints plus explicit extra_roots.
+
+    Parent directories of path hints are used to find .rpp files. The user home
+    directory itself is never added from hints alone — a stray recent file under
+    ``~/foo.rpp`` would otherwise trigger a full ``os.walk`` of ``$HOME``. Use
+    ``--project-root`` / ``--extra-root`` if you really need that scope.
+    """
     hints = extract_path_hints(ini)
     all_paths: list[str] = []
     all_paths.extend(hints["recent_and_tabs"])
     all_paths.extend(hints["last_project"])
     all_paths.extend(hints["path_keys"])
     dirs = unique_parent_dirs([p for p in all_paths if p])
+    home = paths.home().resolve()
     roots: list[Path] = []
     for d in dirs:
+        p = Path(d).expanduser().resolve()
+        if p == home:
+            continue
         roots.append(Path(d).expanduser())
     for r in extra_roots:
         roots.append(r.expanduser())
