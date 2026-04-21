@@ -13,6 +13,7 @@ from .dump_lib import resource_relative_set, run_dump
 from .export_audit import format_evidence_text, run_export_audit
 from .lean import LeanOptions
 from .audio_inspect import run_audio_inspect
+from .plugin_inventory import run_plugin_inventory
 from .preset_inventory import run_preset_details
 from .restore import RestoreConfig, run_restore
 from .rpp import parse_rpp_project_inspect
@@ -149,6 +150,53 @@ def _audio_inspect_cmd(args: argparse.Namespace) -> int:
                 "(truncated)" if aps.get("truncated") else "",
             )
         print(payload.get("reaper_resource_note", ""))
+    return 0
+
+
+def _plugin_inventory_cmd(args: argparse.Namespace) -> int:
+    rp = Path(args.resource).expanduser() if args.resource else None
+    payload = run_plugin_inventory(
+        include_system=args.include_system_plugins,
+        include_reaper_userplugins=not args.no_reaper_userplugins,
+        resource_path=rp,
+        userplugins_max_files=args.userplugins_max_files,
+    )
+    if args.format == "json":
+        print(json.dumps(payload, indent=2))
+        return 0
+    pu = payload.get("plug_ins_user") or {}
+    print("Plug-ins (user):", pu.get("bundle_count"), "bundles")
+    print("  root:", pu.get("root"))
+    if pu.get("by_format"):
+        print("  by format:", pu.get("by_format"))
+    for row in pu.get("bundles") or []:
+        print(f"  [{row.get('format')}] {row.get('bundle_name')}")
+        print("   ", row.get("path"))
+    if payload.get("plug_ins_system"):
+        ps = payload["plug_ins_system"]
+        print("Plug-ins (system):", ps.get("bundle_count"), "bundles")
+        print("  root:", ps.get("root"))
+        if ps.get("by_format"):
+            print("  by format:", ps.get("by_format"))
+        for row in ps.get("bundles") or []:
+            print(f"  [{row.get('format')}] {row.get('bundle_name')}")
+            print("   ", row.get("path"))
+    rup = payload.get("reaper_userplugins")
+    if rup:
+        print(
+            "REAPER UserPlugins:",
+            rup.get("file_count"),
+            "files",
+            "(truncated)" if rup.get("truncated") else "",
+        )
+        print("  root:", rup.get("root"))
+        for row in (rup.get("files") or [])[:50]:
+            print(" ", row.get("path"))
+        if len(rup.get("files") or []) > 50:
+            more = len(rup["files"]) - 50
+            print(f"  ... {more} more file(s); use --format json for the full list")
+    for line in payload.get("notes") or ():
+        print("Note:", line)
     return 0
 
 
@@ -442,6 +490,35 @@ def main(argv: list[str] | None = None) -> int:
     )
     ai.add_argument("--format", choices=("json", "text"), default="json")
     ai.set_defaults(func=_audio_inspect_cmd)
+
+    pi = sub.add_parser(
+        "plugin-inventory",
+        parents=[quiet_parent],
+        help="List installed plug-ins (Audio/Plug-Ins + optional REAPER UserPlugins)",
+    )
+    pi.add_argument(
+        "--include-system-plugins",
+        action="store_true",
+        help="Also scan /Library/Audio/Plug-Ins",
+    )
+    pi.add_argument(
+        "--no-reaper-userplugins",
+        action="store_true",
+        help="Skip <resource>/UserPlugins (Audio/Plug-Ins trees only)",
+    )
+    pi.add_argument(
+        "--resource",
+        help="Override REAPER resource path (for UserPlugins location)",
+    )
+    pi.add_argument(
+        "--userplugins-max-files",
+        type=int,
+        default=5000,
+        metavar="N",
+        help="Cap files listed under UserPlugins (default 5000)",
+    )
+    pi.add_argument("--format", choices=("json", "text"), default="json")
+    pi.set_defaults(func=_plugin_inventory_cmd)
 
     proj = sub.add_parser(
         "project-inspect",

@@ -32,6 +32,7 @@ reaper-backup --help
 | `dump` | Read-only audit: REAPER resource tree, `reaper.ini` path hints, plug-in bundles under standard Audio Plug-Ins trees, `~/Library/Audio/Presets`, project roots, sidecar counts (`*.reapeaks`, `*.rpp-bak`), optional `.rpp` summaries. Optional **`--preset-details`** adds a deep preset inventory (see `preset-details`). |
 | `preset-details` | **Preset-focused** report: **`presets/`** (VST/AU `.ini` etc.), **`Effects/*.rpl`**, optionally **`~/Library/Audio/Presets`**. Per file: size, mtime, text vs binary, INI **`[section]`** names when applicable, path hints — not filenames only. |
 | `audio-inspect` | **`~/Library/Audio/Plug-Ins`** (AU/VST/VST3/CLAP bundles + paths + mtime) and **`~/Library/Audio/Presets`** (same per-file detail as `preset-details` for that tree). Optional **`/Library/...`** with flags. No REAPER resource walk — use `preset-details` for `Application Support/REAPER`. |
+| `plugin-inventory` | **Installed plug-ins only** (no presets): **`~/Library/Audio/Plug-Ins`** bundle scan, optional **`/Library/Audio/Plug-Ins`**, optional **`UserPlugins`** under the REAPER resource path. JSON includes **`summary`** and per-bundle paths. Extra VST folders configured only inside REAPER are **not** scanned. |
 | `project-inspect` | Parse **`.rpp`**: **master** FX chain + **each track** — plugin format (AU/VST/…), display name, **`PRESETNAME`** when present, **bypass** flag. One or more project paths; JSON under **`files`**. |
 | `backup` | Copy into an output directory + **`manifest.json`**. Default is **lean** (skips regenerable caches / scan INIs unless flags). Use **`--comprehensive`** for a full **`Application Support/REAPER`** mirror + host cache so coverage aligns with **`export-audit`** / **`preset-details`**. |
 | `restore` | Apply a backup in **canonical order** (see `RESTORE.md`). Supports **`--dry-run`**, **`--map-user OLD=NEW`**, and **`--home`** for the destination profile. |
@@ -53,6 +54,10 @@ reaper-backup preset-details --format json > presets.json
 # Library/Audio only: plug-in bundles + Audio/Presets file details (no dump, no REAPER resource tree)
 reaper-backup audio-inspect --format json > audio.json
 reaper-backup audio-inspect --include-system-plug-ins --include-system-presets --format text
+
+# Installed plug-ins only (reinstall checklist): user + optional system Audio/Plug-Ins + REAPER UserPlugins
+reaper-backup plugin-inventory --format json --quiet > plugins-installed.json
+reaper-backup plugin-inventory --include-system-plugins --format json --quiet > plugins-with-system.json
 
 # Per-track + master FX and presets from saved projects
 reaper-backup project-inspect ~/Documents/REAPER\ Media/MySong.RPP --format json
