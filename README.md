@@ -2,6 +2,8 @@
 
 Evidence-based **discovery**, **lean backup**, **restore**, and **Cockos export zip inspection** for [REAPER](https://www.reaper.fm/) on macOS. This is a **stdlib-only** Python 3.10+ CLI—no web stack.
 
+Progress messages go to **stderr** on every subcommand (phases and periodic counts for long walks). Use **`--quiet`** to suppress them when piping **`--format json`** to a file.
+
 ## Install
 
 ```bash
@@ -17,6 +19,7 @@ reaper-backup --help
 | `backup` | Copy lean default set (excludes regenerable caches, scan INIs, peaks unless flags) into an output directory with `manifest.json`. |
 | `restore` | Apply a backup in **canonical order** (see `RESTORE.md`). Supports `--dry-run` and `--map-user OLD=NEW`. |
 | `config-inspect` | List a Cockos **Export configuration** zip; optional `--compare-with` a `dump` JSON to diff zip vs live resource files. |
+| `export-audit` | Inspect the **live** resource folder (no zip): heuristics per Cockos export categories, optional `.rpp` scan for JSFX (`<JS` lines). Use before exporting to see what to tick. |
 
 ### Examples
 
@@ -35,6 +38,16 @@ reaper-backup backup --output ~/Desktop/reaper-backup-run --dry-run
 
 # Include official export zip from REAPER → Preferences → General → Export configuration
 reaper-backup backup --output ~/Desktop/bak --official-export ~/Desktop/reaper-config.zip
+
+# Decide what to tick in REAPER → Export configuration (reads disk + optional projects)
+reaper-backup export-audit --format text
+
+# JSFX check across every .rpp found under reaper.ini paths and --project-root / --extra-root
+reaper-backup export-audit --all-rpp --format text
+
+# Any subcommand: JSON on stdout only with --quiet (progress is on stderr)
+reaper-backup dump --format json --quiet > dump.json
+reaper-backup export-audit --format json --quiet > audit.json
 
 # Compare Cockos zip to a prior dump
 reaper-backup config-inspect ~/Desktop/reaper-config.zip --compare-with dump.json

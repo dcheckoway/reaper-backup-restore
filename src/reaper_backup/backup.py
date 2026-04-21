@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 
 from . import paths
 from .dump_lib import collect_project_paths
+from .progress import make_log
 from .lean import LeanOptions, should_skip_project_file, should_skip_resource_path
 from .reaper_ini import extract_path_hints, parse_reaper_ini
 
@@ -47,6 +48,7 @@ class BackupConfig:
     checksums: bool = False
     dry_run: bool = False
     home_dir: Path | None = None  # override for tests
+    verbose: bool = True
 
 
 def _home(cfg: BackupConfig) -> Path:
@@ -79,6 +81,11 @@ def _merge_project_roots(cfg: BackupConfig, ini: dict[str, str]) -> list[Path]:
 
 
 def run_backup(cfg: BackupConfig) -> dict:
+    log = make_log(cfg.verbose)
+    log(
+        f"backup: starting (dry_run={cfg.dry_run}) → output {cfg.output.resolve()}"
+    )
+
     home_path = _home(cfg)
     if cfg.resource_path:
         resource = cfg.resource_path.expanduser().resolve()
@@ -89,10 +96,12 @@ def run_backup(cfg: BackupConfig) -> dict:
 
     ini = parse_reaper_ini(resource / "reaper.ini")
     merged_project_roots = _merge_project_roots(cfg, ini)
+    log(f"backup: resource path {resource}")
 
     # --- REAPER.app ---
     app_src = (cfg.reaper_app_path or paths.default_reaper_app()).expanduser()
     if cfg.include_reaper_app and app_src.exists():
+        log("backup: copying REAPER.app …")
         app_dest = data_root / "reaper_app" / "REAPER.app"
         if cfg.dry_run:
             manifest_entries.append(
@@ -121,7 +130,9 @@ def run_backup(cfg: BackupConfig) -> dict:
 
     # --- Resource path ---
     if resource.is_dir():
+        log("backup: walking Application Support/REAPER (resource) …")
         dest_base = data_root / "resource"
+        res_n = 0
         for dirpath, _dn, filenames in os.walk(resource):
             for fn in filenames:
                 abs_f = Path(dirpath) / fn
@@ -135,6 +146,9 @@ def run_backup(cfg: BackupConfig) -> dict:
                     continue
                 sz = st.st_size
                 sha = _sha256_file(abs_f) if cfg.checksums and not cfg.dry_run else None
+                res_n += 1
+                if res_n % 2500 == 0:
+                    log(f"backup: … {res_n} files in resource tree so far")
                 manifest_entries.append(
                     {
                         "layer": "resource",
@@ -153,6 +167,7 @@ def run_backup(cfg: BackupConfig) -> dict:
                     shutil.copy2(abs_f, dst)
 
     # --- plist ---
+    log("backup: com.cockos.reaper.plist …")
     plist_src = _home(cfg) / "Library" / "Preferences" / "com.cockos.reaper.plist"
     if plist_src.is_file():
         dst = data_root / "plist" / "com.cockos.reaper.plist"
@@ -186,10 +201,13 @@ def run_backup(cfg: BackupConfig) -> dict:
         *,
         dest_is_root: bool,
         use_project_skip: bool,
+        phase_label: str,
     ) -> None:
         if not src_root.is_dir():
             return
+        log(f"backup: {phase_label} …")
         dest_data_base = data_root / data_rel_prefix
+        nf = 0
         for dirpath, _dn, filenames in os.walk(src_root):
             for fn in filenames:
                 abs_f = Path(dirpath) / fn
@@ -210,6 +228,9 @@ def run_backup(cfg: BackupConfig) -> dict:
                 sz = st.st_size
                 sha = _sha256_file(abs_f) if cfg.checksums and not cfg.dry_run else None
                 dsp = dest_home_subpath.rstrip("/") + "/" + rel.as_posix()
+                nf += 1
+                if nf % 2500 == 0:
+                    log(f"backup: … {nf} files in {phase_label} so far")
                 manifest_entries.append(
                     {
                         "layer": layer,
@@ -234,6 +255,7 @@ def run_backup(cfg: BackupConfig) -> dict:
             "Library/Caches/com.cockos.reaper",
             dest_is_root=False,
             use_project_skip=False,
+            phase_label="host cache",
         )
 
     # --- plugins user ---
@@ -244,6 +266,7 @@ def run_backup(cfg: BackupConfig) -> dict:
         "Library/Audio/Plug-Ins",
         dest_is_root=False,
         use_project_skip=False,
+        phase_label="Audio/Plug-Ins (user)",
     )
 
     # --- plugins system ---
@@ -255,6 +278,7 @@ def run_backup(cfg: BackupConfig) -> dict:
             "Library/Audio/Plug-Ins",
             dest_is_root=True,
             use_project_skip=False,
+            phase_label="Audio/Plug-Ins (system)",
         )
 
     # --- audio presets user ---
@@ -265,6 +289,7 @@ def run_backup(cfg: BackupConfig) -> dict:
         "Library/Audio/Presets",
         dest_is_root=False,
         use_project_skip=False,
+        phase_label="Audio/Presets (user)",
     )
 
     # --- audio presets system ---
@@ -276,9 +301,11 @@ def run_backup(cfg: BackupConfig) -> dict:
             "Library/Audio/Presets",
             dest_is_root=True,
             use_project_skip=False,
+            phase_label="Audio/Presets (system)",
         )
 
     # --- project trees ---
+    log("backup: project/media trees from reaper.ini and --project-root …")
     seen_roots: set[str] = set()
     for root in merged_project_roots:
         r = root.expanduser().resolve()
@@ -286,8 +313,10 @@ def run_backup(cfg: BackupConfig) -> dict:
         if key in seen_roots or not r.is_dir():
             continue
         seen_roots.add(key)
+        log(f"backup: project root {r} …")
         slug = hashlib.sha256(key.encode()).hexdigest()[:12]
         dest_prefix = data_root / "projects" / slug
+        pj_n = 0
         for dirpath, _dn, filenames in os.walk(r):
             for fn in filenames:
                 abs_f = Path(dirpath) / fn
@@ -301,6 +330,11 @@ def run_backup(cfg: BackupConfig) -> dict:
                     continue
                 sz = st.st_size
                 sha = _sha256_file(abs_f) if cfg.checksums and not cfg.dry_run else None
+                pj_n += 1
+                if pj_n % 2500 == 0:
+                    log(
+                        f"backup: … {pj_n} files from this project root so far"
+                    )
                 manifest_entries.append(
                     {
                         "layer": "project",
@@ -319,6 +353,7 @@ def run_backup(cfg: BackupConfig) -> dict:
 
     # --- Cockos official export zip ---
     if cfg.official_export_zip and cfg.official_export_zip.is_file():
+        log("backup: Cockos export configuration zip …")
         zsrc = cfg.official_export_zip.resolve()
         zdst = data_root / "artifacts" / "cockos_export_configuration.zip"
         try:
@@ -370,8 +405,14 @@ def run_backup(cfg: BackupConfig) -> dict:
     }
 
     if not cfg.dry_run:
+        log("backup: writing manifest.json …")
         cfg.output.mkdir(parents=True, exist_ok=True)
         man_path = cfg.output / "manifest.json"
         man_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    else:
+        log(
+            f"backup: dry-run — would write {len(manifest.get('entries', []))} manifest entries"
+        )
 
+    log("backup: done")
     return manifest

@@ -5,17 +5,26 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from collections.abc import Callable
+
 from . import paths
 from .plugin_scan import scan_audio_plug_ins_dirs
+from .progress import find_rpp_files_with_progress, make_log
 from .reaper_ini import extract_path_hints, parse_reaper_ini, unique_parent_dirs
 from .rpp import parse_rpp
 
 
-def walk_resource_files(root: Path) -> list[dict]:
+def walk_resource_files(
+    root: Path,
+    *,
+    log: Callable[[str], None] | None = None,
+    progress_every: int = 4000,
+) -> list[dict]:
     """All files under root with relative posix path, size, mtime."""
     out: list[dict] = []
     if not root.is_dir():
         return out
+    n = 0
     for dirpath, _dirnames, filenames in os.walk(root):
         for fn in filenames:
             p = Path(dirpath) / fn
@@ -31,6 +40,9 @@ def walk_resource_files(root: Path) -> list[dict]:
                     "mtime": int(st.st_mtime),
                 }
             )
+            n += 1
+            if log and n % progress_every == 0:
+                log(f"dump: … {n} files listed under resource path so far")
     return sorted(out, key=lambda x: x["path"])
 
 
@@ -124,20 +136,44 @@ def run_dump(
     extra_roots: list[Path] | None = None,
     rpp_details: bool = False,
     rpp_limit: int = 50,
+    verbose: bool = True,
 ) -> dict:
+    log = make_log(verbose)
     resource_path = resource_path or paths.default_resource_path()
     extra_roots = extra_roots or []
     project_roots = project_roots or []
+
+    log(f"dump: resource path {resource_path.resolve()}")
 
     ini_path = resource_path / "reaper.ini"
     ini = parse_reaper_ini(ini_path)
     merged_roots = list(project_roots) + collect_project_paths(ini, extra_roots)
 
+    log("dump: listing files under REAPER resource path …")
+    resource_list = walk_resource_files(resource_path, log=log if verbose else None)
+
+    log("dump: scanning Audio Plug-Ins folders …")
     plug_roots = [paths.user_audio_plug_ins()]
     sys_pi = paths.system_audio_plug_ins()
     if sys_pi.is_dir():
         plug_roots.append(sys_pi)
     plugins = scan_audio_plug_ins_dirs(plug_roots)
+
+    log("dump: listing plug-in scan-cache INIs …")
+    scan_caches = plugin_scan_cache_files(resource_path)
+
+    log("dump: counting sidecar files (*.reapeaks, *.rpp-bak) per project root …")
+    sidecars = {}
+    for r in merged_roots:
+        if r.is_dir():
+            sidecars[str(r.resolve())] = glob_sidecars(r)
+
+    log("dump: discovering .rpp projects under path hints …")
+    if verbose:
+        rpp_paths = find_rpp_files_with_progress(merged_roots, log=log, prefix="dump")
+    else:
+        rpp_paths = find_rpp_files(merged_roots)
+    log(f"dump: found {len(rpp_paths)} .rpp file(s)")
 
     payload: dict = {
         "resource_path": str(resource_path.resolve()),
@@ -151,7 +187,7 @@ def run_dump(
         },
         "reaper_ini": {k: ini[k] for k in sorted(ini.keys())[:200]} if ini else {},
         "path_hints": extract_path_hints(ini),
-        "resource_files": walk_resource_files(resource_path),
+        "resource_files": resource_list,
         "audio_plug_ins": {
             "user": str(paths.user_audio_plug_ins()),
             "system": str(paths.system_audio_plug_ins()),
@@ -159,19 +195,22 @@ def run_dump(
         "plugins_fs": [
             {"format": p.format, "path": str(p.path.resolve())} for p in plugins
         ],
-        "plugin_scan_cache_files": plugin_scan_cache_files(resource_path),
+        "plugin_scan_cache_files": scan_caches,
         "audio_presets_user": str(paths.user_audio_presets()),
         "audio_presets_user_exists": paths.user_audio_presets().is_dir(),
         "project_roots_checked": [str(p.resolve()) for p in merged_roots],
-        "sidecars_by_root": {
-            str(r.resolve()): glob_sidecars(r) for r in merged_roots if r.is_dir()
-        },
-        "rpp_files": [str(p.resolve()) for p in find_rpp_files(merged_roots)],
+        "sidecars_by_root": sidecars,
+        "rpp_files": [str(p.resolve()) for p in rpp_paths],
     }
 
     if rpp_details:
+        log(
+            f"dump: parsing up to {rpp_limit} .rpp file(s) for track/FX summaries …"
+        )
         details = []
-        for p in find_rpp_files(merged_roots)[:rpp_limit]:
+        for i, p in enumerate(rpp_paths[:rpp_limit]):
+            if verbose and i > 0 and i % 10 == 0:
+                log(f"dump: … parsed {i} project(s) …")
             try:
                 s = parse_rpp(p)
                 details.append(
@@ -187,6 +226,7 @@ def run_dump(
                 details.append({"path": str(p.resolve()), "error": str(e)})
         payload["rpp_details"] = details
 
+    log("dump: done")
     return payload
 
 

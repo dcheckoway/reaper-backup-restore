@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import paths
+from .progress import make_log
 
 
 @dataclass
@@ -16,6 +17,7 @@ class RestoreConfig:
     dry_run: bool = False
     map_user: tuple[str, str] | None = None  # (old_home, new_home) as path strings
     home_dir: Path | None = None
+    verbose: bool = True
 
 
 def run_restore(cfg: RestoreConfig) -> list[dict]:
@@ -28,9 +30,16 @@ def run_restore(cfg: RestoreConfig) -> list[dict]:
     if not man_path.is_file():
         raise FileNotFoundError(f"Missing manifest: {man_path}")
 
+    vlog = make_log(cfg.verbose)
+    vlog(f"restore: reading {man_path}")
+
     manifest = json.loads(man_path.read_text(encoding="utf-8"))
     data_root = cfg.backup_root / "data"
     entries: list[dict] = list(manifest.get("entries", []))
+    vlog(
+        f"restore: {len(entries)} manifest entr(y/ies); "
+        f"dry_run={cfg.dry_run}"
+    )
 
     source_home = str(manifest.get("source_home", ""))
     new_home = str((cfg.home_dir or paths.home()).expanduser().resolve())
@@ -40,7 +49,7 @@ def run_restore(cfg: RestoreConfig) -> list[dict]:
     if cfg.map_user:
         old_h, new_h = cfg.map_user[0], cfg.map_user[1]
 
-    log: list[dict] = []
+    out: list[dict] = []
 
     def resolve_dest(entry: dict) -> Path | None:
         dt = entry.get("dest_type")
@@ -60,10 +69,12 @@ def run_restore(cfg: RestoreConfig) -> list[dict]:
 
     entries.sort(key=lambda e: (e.get("order", 0), e.get("src", "")))
 
-    for entry in entries:
+    for i, entry in enumerate(entries):
+        if cfg.verbose and i > 0 and i % 400 == 0:
+            vlog(f"restore: … processed {i}/{len(entries)} entries")
         layer = entry.get("layer", "")
         if layer == "cockos_export":
-            log.append(
+            out.append(
                 {
                     "action": "skip",
                     "layer": layer,
@@ -78,7 +89,7 @@ def run_restore(cfg: RestoreConfig) -> list[dict]:
             continue
         src_abs = (data_root / src_rel).resolve()
         if not src_abs.exists():
-            log.append(
+            out.append(
                 {
                     "action": "error",
                     "layer": layer,
@@ -93,7 +104,7 @@ def run_restore(cfg: RestoreConfig) -> list[dict]:
             dsp = entry.get("dest_subpath", "Applications/REAPER.app").lstrip("/")
             dest = Path("/") / dsp
             if cfg.dry_run:
-                log.append(
+                out.append(
                     {
                         "action": "would_copytree",
                         "layer": layer,
@@ -105,7 +116,7 @@ def run_restore(cfg: RestoreConfig) -> list[dict]:
                 if dest.exists():
                     shutil.rmtree(dest)
                 shutil.copytree(src_abs, dest, symlinks=True)
-                log.append(
+                out.append(
                     {
                         "action": "copytree",
                         "layer": layer,
@@ -116,7 +127,7 @@ def run_restore(cfg: RestoreConfig) -> list[dict]:
             continue
 
         if not src_abs.is_file():
-            log.append(
+            out.append(
                 {
                     "action": "error",
                     "layer": layer,
@@ -128,10 +139,10 @@ def run_restore(cfg: RestoreConfig) -> list[dict]:
 
         dest = resolve_dest(entry)
         if dest is None:
-            log.append({"action": "skip", "layer": layer, "src": src_rel})
+            out.append({"action": "skip", "layer": layer, "src": src_rel})
             continue
 
-        log.append(
+        out.append(
             {
                 "action": "copy" if not cfg.dry_run else "would_copy",
                 "layer": layer,
@@ -143,4 +154,5 @@ def run_restore(cfg: RestoreConfig) -> list[dict]:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src_abs, dest)
 
-    return log
+    vlog(f"restore: done ({len(out)} operations logged)")
+    return out

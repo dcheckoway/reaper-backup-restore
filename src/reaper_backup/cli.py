@@ -10,6 +10,7 @@ from pathlib import Path
 from .backup import BackupConfig, run_backup
 from .config_zip import compare_zip_to_paths, list_zip_members
 from .dump_lib import resource_relative_set, run_dump
+from .export_audit import run_export_audit
 from .lean import LeanOptions
 from .restore import RestoreConfig, run_restore
 
@@ -24,6 +25,7 @@ def _dump_cmd(args: argparse.Namespace) -> int:
         extra_roots=extra,
         rpp_details=args.rpp_details,
         rpp_limit=args.rpp_limit,
+        verbose=not args.quiet,
     )
     if args.format == "json":
         print(json.dumps(payload, indent=2))
@@ -68,6 +70,7 @@ def _backup_cmd(args: argparse.Namespace) -> int:
         else None,
         checksums=args.checksum,
         dry_run=args.dry_run,
+        verbose=not args.quiet,
     )
     manifest = run_backup(cfg)
     if args.dry_run:
@@ -90,6 +93,7 @@ def _restore_cmd(args: argparse.Namespace) -> int:
         backup_root=root,
         dry_run=args.dry_run,
         map_user=map_user,
+        verbose=not args.quiet,
     )
     log = run_restore(cfg)
     for row in log:
@@ -97,20 +101,66 @@ def _restore_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+def _export_audit_cmd(args: argparse.Namespace) -> int:
+    rpp_limit = None if args.all_rpp else args.rpp_max_files
+    payload = run_export_audit(
+        resource_path=Path(args.resource).expanduser() if args.resource else None,
+        extra_roots=[Path(p) for p in (args.extra_root or [])],
+        project_roots=[Path(p) for p in (args.project_root or [])],
+        scan_rpp=not args.no_rpp,
+        rpp_max_files=rpp_limit,
+        verbose=not args.quiet,
+    )
+    if args.format == "json":
+        print(json.dumps(payload, indent=2))
+    else:
+        print("resource_path:", payload.get("resource_path"))
+        print("RPP files discovered:", payload.get("rpp_files_discovered"))
+        for line in payload.get("recommendations", []):
+            print("-", line)
+        js = payload.get("jsfx", {})
+        proj = js.get("projects", {})
+        print(
+            "JSFX: Effects dir files:",
+            js.get("user_effects_dir", {}).get("file_count", 0),
+            "| projects with <JS (in scan):",
+            proj.get("rpp_projects_with_jsfx", proj.get("rpp_files_with_jsfx", 0)),
+        )
+        scan = payload.get("rpp_jsfx_scan", {})
+        if scan.get("capped"):
+            print(
+                "  (JSFX scan capped:",
+                scan.get("scanned"),
+                "of",
+                payload.get("rpp_files_discovered"),
+                ".rpp — use --all-rpp for full history)",
+            )
+    return 0
+
+
 def _config_inspect_cmd(args: argparse.Namespace) -> int:
+    from .progress import stderr_line
+
+    log = stderr_line if not args.quiet else lambda _m: None
     z = Path(args.zip_path).expanduser()
+    log(f"config-inspect: reading zip {z} …")
     members = list_zip_members(z)
     total = sum(s for _, s in members)
+    log(f"config-inspect: {len(members)} member(s), {total} bytes (uncompressed)")
     print(f"{z}: {len(members)} files, {total} bytes (uncompressed)")
     if args.list:
+        log("config-inspect: listing members to stdout …")
         for name, sz in members:
             print(f"  {sz:10d}  {name}")
     if args.compare_with:
         dump_path = Path(args.compare_with).expanduser()
+        log(f"config-inspect: loading {dump_path} for compare …")
         dump = json.loads(dump_path.read_text(encoding="utf-8"))
         rel = resource_relative_set(dump)
+        log("config-inspect: comparing zip paths to dump resource paths …")
         diff = compare_zip_to_paths(z, rel)
         print(json.dumps(diff, indent=2))
+    log("config-inspect: done")
     return 0
 
 
@@ -118,7 +168,18 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="reaper-backup", description="REAPER backup / restore helper")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    d = sub.add_parser("dump", help="Discover REAPER paths and inventory (read-only)")
+    quiet_parent = argparse.ArgumentParser(add_help=False)
+    quiet_parent.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress progress messages on stderr (keep stdout for JSON / piping)",
+    )
+
+    d = sub.add_parser(
+        "dump",
+        parents=[quiet_parent],
+        help="Discover REAPER paths and inventory (read-only)",
+    )
     d.add_argument("--resource", help="Override REAPER resource path")
     d.add_argument("--extra-root", action="append", help="Extra directory roots (repeatable)")
     d.add_argument("--project-root", action="append", help="Extra project/media roots")
@@ -132,7 +193,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     d.set_defaults(func=_dump_cmd)
 
-    b = sub.add_parser("backup", help="Create lean backup directory + manifest.json")
+    b = sub.add_parser(
+        "backup",
+        parents=[quiet_parent],
+        help="Create lean backup directory + manifest.json",
+    )
     b.add_argument("--output", required=True, help="Output directory")
     b.add_argument("--resource", help="Override REAPER resource path")
     b.add_argument("--extra-root", action="append", help="Include this tree (vendor/media)")
@@ -154,7 +219,11 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--include-os-metadata", action="store_true")
     b.set_defaults(func=_backup_cmd)
 
-    r = sub.add_parser("restore", help="Restore from backup directory (canonical order)")
+    r = sub.add_parser(
+        "restore",
+        parents=[quiet_parent],
+        help="Restore from backup directory (canonical order)",
+    )
     r.add_argument(
         "--from",
         dest="from_dir",
@@ -168,7 +237,39 @@ def main(argv: list[str] | None = None) -> int:
     )
     r.set_defaults(func=_restore_cmd)
 
-    c = sub.add_parser("config-inspect", help="Inspect Cockos Export configuration zip")
+    e = sub.add_parser(
+        "export-audit",
+        parents=[quiet_parent],
+        help="Audit live resource path for Cockos Export configuration checkboxes (no zip needed)",
+    )
+    e.add_argument("--resource", help="Override REAPER resource path")
+    e.add_argument("--extra-root", action="append", help="Extra roots for finding .rpp (repeatable)")
+    e.add_argument("--project-root", action="append", help="Extra project roots for .rpp scan")
+    e.add_argument(
+        "--no-rpp",
+        action="store_true",
+        help="Do not scan .rpp files for JSFX (<JS lines); faster",
+    )
+    e.add_argument(
+        "--all-rpp",
+        action="store_true",
+        help="Scan every discovered .rpp for JSFX (no cap; use for full project history)",
+    )
+    e.add_argument(
+        "--rpp-max-files",
+        type=int,
+        default=150,
+        metavar="N",
+        help="Max .rpp files to read for JSFX when not using --all-rpp (default 150)",
+    )
+    e.add_argument("--format", choices=("json", "text"), default="json")
+    e.set_defaults(func=_export_audit_cmd)
+
+    c = sub.add_parser(
+        "config-inspect",
+        parents=[quiet_parent],
+        help="Inspect Cockos Export configuration zip",
+    )
     c.add_argument("zip_path", help="Path to exported zip")
     c.add_argument("--list", action="store_true", help="Print all member paths and sizes")
     c.add_argument(
