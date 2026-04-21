@@ -124,4 +124,4 @@ See `RESTORE.md` for the **canonical restore order** and first-launch rescan beh
 
 ## License
 
-Tool code: project license (if added). REAPER is a trademark of Cockos Incorporated.
+Tool code is under the [MIT License](LICENSE). REAPER is a trademark of Cockos Incorporated.

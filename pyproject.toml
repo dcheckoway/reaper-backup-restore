@@ -7,6 +7,7 @@ name = "reaper-backup"
 version = "0.1.0"
 description = "REAPER migration: discovery, lean backup, restore, Cockos export zip inspection"
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = []
 
