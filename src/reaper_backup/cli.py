@@ -15,6 +15,54 @@ from .lean import LeanOptions
 from .audio_inspect import run_audio_inspect
 from .preset_inventory import run_preset_details
 from .restore import RestoreConfig, run_restore
+from .rpp import parse_rpp_project_inspect
+
+
+def _format_fx_slot_text(slot: dict, idx: int) -> str:
+    fmt = slot.get("format") or "?"
+    plug = slot.get("plugin") or "(unknown)"
+    extra: list[str] = []
+    if slot.get("preset") is not None:
+        extra.append(f'preset="{slot["preset"]}"')
+    if slot.get("bypassed"):
+        extra.append("BYPASS")
+    tail = (" | " + " | ".join(extra)) if extra else ""
+    return f"  {idx}. [{fmt}] {plug}{tail}"
+
+
+def _project_inspect_cmd(args: argparse.Namespace) -> int:
+    files_data: list[dict] = []
+    for raw in args.rpp:
+        path = Path(raw).expanduser()
+        if not path.is_file():
+            print(f"project-inspect: not a file: {path}", file=sys.stderr)
+            return 2
+        files_data.append(parse_rpp_project_inspect(path))
+    if args.format == "json":
+        print(json.dumps({"files": files_data}, indent=2))
+        return 0
+    for fd in files_data:
+        print(fd.get("path", ""))
+        print("  reaper_version:", fd.get("reaper_version"))
+        print("  --- Master ---")
+        mfx = (fd.get("master") or {}).get("fx") or []
+        if not mfx:
+            print("    (no FX)")
+        else:
+            for i, slot in enumerate(mfx, 1):
+                print(_format_fx_slot_text(slot, i))
+        print("  --- Tracks ---")
+        for tr in fd.get("tracks") or []:
+            tname = tr.get("name") or "(unnamed)"
+            tid = tr.get("track_index", 0)
+            print(f'  #{tid} "{tname}"')
+            tfx = tr.get("fx") or []
+            if not tfx:
+                print("    (no FX)")
+            for i, slot in enumerate(tfx, 1):
+                print(_format_fx_slot_text(slot, i))
+        print()
+    return 0
 
 
 def _dump_cmd(args: argparse.Namespace) -> int:
@@ -394,6 +442,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     ai.add_argument("--format", choices=("json", "text"), default="json")
     ai.set_defaults(func=_audio_inspect_cmd)
+
+    proj = sub.add_parser(
+        "project-inspect",
+        parents=[quiet_parent],
+        help="Parse .rpp: master + per-track FX (format, plugin, PRESETNAME, bypass)",
+    )
+    proj.add_argument(
+        "rpp",
+        nargs="+",
+        metavar="FILE.rpp",
+        help="One or more REAPER project files",
+    )
+    proj.add_argument("--format", choices=("json", "text"), default="json")
+    proj.set_defaults(func=_project_inspect_cmd)
 
     b = sub.add_parser(
         "backup",
